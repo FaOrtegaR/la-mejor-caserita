@@ -1,0 +1,23 @@
+# Android Studio / IntelliJ
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Base de datos local
+*.db
+*.db-shm
+*.db-wal
+
+# Archivos de log
+*.log
+
+# Archivos temporales
+*.tmp
+*.bak
