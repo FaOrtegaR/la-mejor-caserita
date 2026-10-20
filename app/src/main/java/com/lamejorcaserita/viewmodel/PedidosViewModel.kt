@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lamejorcaserita.data.AppDatabase
 import com.lamejorcaserita.data.entity.Pedido
+import com.lamejorcaserita.data.entity.PedidoConItems
 import com.lamejorcaserita.data.entity.PedidoItem
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -16,23 +17,23 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
     private val db = AppDatabase.obtenerBaseDeDatos(application)
     private val pedidoDao = db.pedidoDao()
 
-    // FLUJOS DE PEDIDOS
+    // ===== FLUJOS DE PEDIDOS =====
 
-    val pedidosPendientes: StateFlow<List<Pedido>> = pedidoDao.obtenerPendientes()
+    val pedidosPendientes: StateFlow<List<PedidoConItems>> = pedidoDao.obtenerPendientesConItems()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
 
-    val pedidosEntregados: StateFlow<List<Pedido>> = pedidoDao.obtenerEntregados()
+    val pedidosEntregados: StateFlow<List<PedidoConItems>> = pedidoDao.obtenerEntregadosConItems()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
 
-    // CREAR PEDIDO
+    // ===== CREAR Y ACTUALIZAR PEDIDOS =====
 
     fun crearPedido(nombreCliente: String, items: List<PedidoItem>, total: Int) {
         viewModelScope.launch {
@@ -46,10 +47,6 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Agrega un producto a un pedido pendiente existente del cliente.
-     * Si no existe pedido pendiente, crea uno nuevo.
-     */
     fun agregarProductoAPedido(
         nombreCliente: String,
         productoId: Int,
@@ -89,48 +86,33 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // ACTUALIZAR PEDIDO
-
-    fun marcarComoEntregado(pedidoId: Int, entregado: Boolean) {
+    fun crearOActualizarPedidoConItems(
+        nombreCliente: String,
+        items: List<PedidoItem>
+    ) {
         viewModelScope.launch {
-            pedidoDao.actualizarEstado(pedidoId, entregado)
+            val pedidoExistente = pedidoDao.buscarPedidoPendientePorCliente(nombreCliente)
+
+            if (pedidoExistente != null) {
+                val totalReal = items.sumOf { it.subtotal }
+                pedidoDao.reemplazarItemsDePedido(pedidoExistente.id, items, totalReal)
+                pedidoDao.actualizarNombre(pedidoExistente.id, nombreCliente)
+            } else {
+                val totalReal = items.sumOf { it.subtotal }
+                val nuevoPedido = Pedido(
+                    nombreCliente = nombreCliente,
+                    fecha = System.currentTimeMillis(),
+                    total = totalReal,
+                    entregado = false,
+                    pagado = false
+                )
+                val pedidoId = pedidoDao.insertarPedido(nuevoPedido)
+                val itemsConPedido = items.map { it.copy(pedidoId = pedidoId.toInt()) }
+                pedidoDao.insertarItems(itemsConPedido)
+            }
         }
     }
 
-    fun eliminarPedido(pedidoId: Int) {
-        viewModelScope.launch {
-            pedidoDao.eliminarPedido(pedidoId)
-        }
-    }
-
-    // OBTENER ITEMS
-
-    suspend fun obtenerItemsDePedido(pedidoId: Int): List<PedidoItem> {
-        return pedidoDao.obtenerItemsDePedido(pedidoId)
-    }
-
-    fun observarItemsDePedido(pedidoId: Int) = pedidoDao.observarItemsDePedido(pedidoId)
-
-    // LIMPIEZA AUTOMÁTICA
-
-    /**
-     * Elimina los pedidos entregados que tengan más de 6 días de antigüedad.
-     * Se debe llamar al abrir la pantalla de Pedidos.
-     */
-    fun limpiarPedidosAntiguos() {
-        viewModelScope.launch {
-            val seisDiasEnMillis = 6L * 24 * 60 * 60 * 1000
-            val fechaLimite = System.currentTimeMillis() - seisDiasEnMillis
-            pedidoDao.eliminarPedidosEntregadosAntiguos(fechaLimite)
-        }
-    }
-
-    /**
-     * Actualiza un pedido existente:
-     * - Borra todos los items actuales
-     * - Inserta los items nuevos según las cantidades
-     * - Recalcula el total
-     */
     fun actualizarPedido(
         pedidoId: Int,
         nombreCliente: String,
@@ -138,10 +120,6 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
         productos: List<com.lamejorcaserita.data.entity.Producto>
     ) {
         viewModelScope.launch {
-            // 1. Eliminar items actuales
-            pedidoDao.eliminarItemsDePedido(pedidoId)
-
-            // 2. Insertar los items nuevos
             val nuevosItems = mutableListOf<PedidoItem>()
             var nuevoTotal = 0
 
@@ -165,15 +143,17 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            pedidoDao.insertarItems(nuevosItems)
-
-            // 3. Actualizar nombre y total del pedido
             pedidoDao.actualizarNombre(pedidoId, nombreCliente)
-            pedidoDao.actualizarTotal(pedidoId, nuevoTotal)
+            pedidoDao.reemplazarItemsDePedido(pedidoId, nuevosItems, nuevoTotal)
         }
     }
-    suspend fun obtenerPedidoPorId(pedidoId: Int): Pedido? {
-        return pedidoDao.obtenerPorId(pedidoId)
+
+    // ===== ACTUALIZAR ESTADOS =====
+
+    fun marcarComoEntregado(pedidoId: Int, entregado: Boolean) {
+        viewModelScope.launch {
+            pedidoDao.actualizarEstado(pedidoId, entregado)
+        }
     }
 
     fun marcarComoPagado(pedidoId: Int, pagado: Boolean) {
@@ -182,42 +162,37 @@ class PedidosViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Crea un pedido nuevo con múltiples items de una sola vez.
-     * Si ya existe un pedido pendiente con el mismo nombre, se suman los items.
-     */
-    fun crearOActualizarPedidoConItems(
-        nombreCliente: String,
-        items: List<PedidoItem>
-    ) {
+    fun eliminarPedido(pedidoId: Int) {
         viewModelScope.launch {
-            val pedidoExistente = pedidoDao.buscarPedidoPendientePorCliente(nombreCliente)
+            pedidoDao.eliminarPedido(pedidoId)
+        }
+    }
 
-            if (pedidoExistente != null) {
-                // Sumar cada item al pedido existente
-                items.forEach { item ->
-                    pedidoDao.agregarItemAPedido(
-                        pedidoId = pedidoExistente.id,
-                        productoId = item.productoId,
-                        nombreProducto = item.nombreProducto,
-                        precioUnitario = item.precioUnitario,
-                        cantidad = item.cantidad
-                    )
-                }
-            } else {
-                // Crear un pedido nuevo con todos los items
-                val total = items.sumOf { it.subtotal }
-                val nuevoPedido = Pedido(
-                    nombreCliente = nombreCliente,
-                    fecha = System.currentTimeMillis(),
-                    total = total,
-                    entregado = false,
-                    pagado = false
-                )
-                val pedidoId = pedidoDao.insertarPedido(nuevoPedido)
-                val itemsConPedido = items.map { it.copy(pedidoId = pedidoId.toInt()) }
-                pedidoDao.insertarItems(itemsConPedido)
-            }
+    // ===== OBTENER DATOS =====
+
+    suspend fun obtenerPedidoPorId(pedidoId: Int): Pedido? {
+        return pedidoDao.obtenerPorId(pedidoId)
+    }
+
+    suspend fun obtenerItemsDePedido(pedidoId: Int): List<PedidoItem> {
+        return pedidoDao.obtenerItemsDePedido(pedidoId)
+    }
+
+    fun observarItemsDePedido(pedidoId: Int) = pedidoDao.observarItemsDePedido(pedidoId)
+
+    suspend fun recalcularTotalPedido(pedidoId: Int) {
+        val items = pedidoDao.obtenerItemsDePedido(pedidoId)
+        val nuevoTotal = items.sumOf { it.subtotal }
+        pedidoDao.actualizarTotal(pedidoId, nuevoTotal)
+    }
+
+    // ===== LIMPIEZA =====
+
+    fun limpiarPedidosAntiguos() {
+        viewModelScope.launch {
+            val seisDiasEnMillis = 6L * 24 * 60 * 60 * 1000
+            val fechaLimite = System.currentTimeMillis() - seisDiasEnMillis
+            pedidoDao.eliminarPedidosEntregadosAntiguos(fechaLimite)
         }
     }
 }

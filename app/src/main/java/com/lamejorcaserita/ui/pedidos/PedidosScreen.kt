@@ -104,10 +104,12 @@ fun PedidosScreen(
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
                     }
-                    items(pedidosPendientes, key = { it.id }) { pedido ->
+                    // Iteramos sobre pedidoConItems
+                    items(pedidosPendientes, key = { it.pedido.id }) { pedidoConItems ->
                         PedidoItemCard(
-                            pedido = pedido,
-                            onClick = { onVerDetalle(pedido.id) }
+                            pedido = pedidoConItems.pedido,
+                            totalCalculado = pedidoConItems.totalCalculado, // <-- AQUÍ pasamos el total recalculado
+                            onClick = { onVerDetalle(pedidoConItems.pedido.id) }
                         )
                     }
                 }
@@ -124,10 +126,12 @@ fun PedidosScreen(
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
                     }
-                    items(pedidosEntregados, key = { it.id }) { pedido ->
+                    // Iteramos sobre pedidoConItems
+                    items(pedidosEntregados, key = { it.pedido.id }) { pedidoConItems ->
                         PedidoItemCard(
-                            pedido = pedido,
-                            onClick = { onVerDetalle(pedido.id) },
+                            pedido = pedidoConItems.pedido,
+                            totalCalculado = pedidoConItems.totalCalculado, // <-- AQUÍ pasamos el total recalculado
+                            onClick = { onVerDetalle(pedidoConItems.pedido.id) },
                             esEntregado = true
                         )
                     }
@@ -140,6 +144,7 @@ fun PedidosScreen(
 @Composable
 fun PedidoItemCard(
     pedido: Pedido,
+    totalCalculado: Int,
     onClick: () -> Unit,
     esEntregado: Boolean = false
 ) {
@@ -176,8 +181,9 @@ fun PedidoItemCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Usamos el totalCalculado, no el pedido.total
                     Text(
-                        text = "$${pedido.total}",
+                        text = "$$totalCalculado",
                         style = MaterialTheme.typography.titleMedium,
                         color = if (esEntregado) TextoSecundarioMostaza else DoradoOscuro,
                         fontWeight = FontWeight.Bold

@@ -5,13 +5,22 @@ import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Transaction
 import com.lamejorcaserita.data.entity.Pedido
+import com.lamejorcaserita.data.entity.PedidoConItems
 import com.lamejorcaserita.data.entity.PedidoItem
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PedidoDao {
 
-    // PEDIDOS
+    // ===== PEDIDOS =====
+
+    @Transaction
+    @Query("SELECT * FROM pedidos WHERE entregado = 0 ORDER BY fecha DESC")
+    fun obtenerPendientesConItems(): Flow<List<PedidoConItems>>
+
+    @Transaction
+    @Query("SELECT * FROM pedidos WHERE entregado = 1 ORDER BY fecha DESC")
+    fun obtenerEntregadosConItems(): Flow<List<PedidoConItems>>
 
     @Query("SELECT * FROM pedidos WHERE entregado = 0 ORDER BY fecha DESC")
     fun obtenerPendientes(): Flow<List<Pedido>>
@@ -19,8 +28,8 @@ interface PedidoDao {
     @Query("SELECT * FROM pedidos WHERE entregado = 1 ORDER BY fecha DESC")
     fun obtenerEntregados(): Flow<List<Pedido>>
 
-    @Query("SELECT * FROM pedidos WHERE id = :id")
-    suspend fun obtenerPorId(id: Int): Pedido?
+    @Query("SELECT * FROM pedidos WHERE id = :pedidoId")
+    suspend fun obtenerPorId(pedidoId: Int): Pedido?
 
     @Query("""
         SELECT * FROM pedidos 
@@ -44,7 +53,10 @@ interface PedidoDao {
     @Query("DELETE FROM pedidos WHERE entregado = 1 AND fecha < :fechaLimite")
     suspend fun eliminarPedidosEntregadosAntiguos(fechaLimite: Long)
 
-    // ITEMS
+    @Query("SELECT * FROM pedidos ORDER BY fecha DESC")
+    fun obtenerTodos(): Flow<List<Pedido>>
+
+    // ===== ITEMS =====
 
     @Query("SELECT * FROM pedido_items WHERE pedidoId = :pedidoId")
     suspend fun obtenerItemsDePedido(pedidoId: Int): List<PedidoItem>
@@ -84,7 +96,20 @@ interface PedidoDao {
     @Query("UPDATE pedidos SET pagado = :pagado WHERE id = :id")
     suspend fun actualizarPagado(id: Int, pagado: Boolean)
 
-    // TRANSACCIONES
+    // ===== TRANSACCIONES =====
+
+    @Transaction
+    suspend fun reemplazarItemsDePedido(pedidoId: Int, nuevosItems: List<PedidoItem>, nuevoTotal: Int) {
+        // 1. Borramos todos los items viejos de este pedido
+        eliminarItemsDePedido(pedidoId)
+
+        // 2. Insertamos la lista exacta de items nuevos
+        val itemsConPedido = nuevosItems.map { it.copy(pedidoId = pedidoId) }
+        insertarItems(itemsConPedido)
+
+        // 3. Actualizamos el total en la tabla pedidos
+        actualizarTotal(pedidoId, nuevoTotal)
+    }
 
     @Transaction
     suspend fun crearPedidoConItems(pedido: Pedido, items: List<PedidoItem>): Long {
@@ -112,10 +137,12 @@ interface PedidoDao {
             )
             insertarItem(nuevoItem)
         }
-        // Actualizar el total del pedido
-        val items = obtenerItemsDePedido(pedidoId)
-        val nuevoTotal = items.sumOf { it.subtotal }
+
+        // Recalcular el total sumando los subtotales reales de la BD
+        val itemsActuales = obtenerItemsDePedido(pedidoId)
+        val nuevoTotal = itemsActuales.sumOf { it.subtotal }
         actualizarTotal(pedidoId, nuevoTotal)
+
         return nuevoTotal
     }
 }

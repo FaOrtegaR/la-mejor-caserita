@@ -17,29 +17,25 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lamejorcaserita.data.entity.Producto
 import com.lamejorcaserita.viewmodel.PedidosViewModel
 import com.lamejorcaserita.viewmodel.ProductosViewModel
-import androidx.compose.runtime.LaunchedEffect
 import com.lamejorcaserita.ui.theme.DoradoOscuro
 import com.lamejorcaserita.ui.theme.MostazaOpaco
 import com.lamejorcaserita.ui.theme.TextoSobreMostaza
 import android.Manifest
-import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.Color
 import com.lamejorcaserita.data.entity.PedidoItem
 import com.lamejorcaserita.voz.ProcesadorDeVoz
 import com.lamejorcaserita.voz.ReconocimientoVoz
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NuevoPedidoScreen(
-    pedidoId: Int? = null,  // null = nuevo pedido, número = editar existente
+    pedidoId: Int? = null,
     onVolver: () -> Unit = {},
     onPedidoGuardado: () -> Unit = {},
     pedidosViewModel: PedidosViewModel = viewModel(),
@@ -47,41 +43,54 @@ fun NuevoPedidoScreen(
 ) {
     val productos by productosViewModel.productos.collectAsState()
 
-    var cargando by remember { mutableStateOf(pedidoId != null) }
+    // Iniciamos "cargando" en true. Solo se apagará cuando los datos estén listos.
+    var cargando by remember { mutableStateOf(true) }
     var nombreCliente by remember { mutableStateOf("") }
     val cantidades = remember { mutableStateMapOf<Int, Int>() }
+
+    // El total se calcula siempre basándose en el estado actual
     val total = productos.sumOf { producto ->
         val cantidad = cantidades[producto.id] ?: 0
         producto.precio * cantidad
     }
-    // Si estamos editando, cargar los items del pedido
-    LaunchedEffect(pedidoId) {
-        if (pedidoId != null) {
+
+    // 1. CARGA INICIAL (Espera a que los productos y el pedido estén listos)
+    LaunchedEffect(pedidoId, productos) {
+        // Si estamos editando, esperamos a que los productos carguen antes de traer los items
+        if (pedidoId != null && productos.isNotEmpty() && cantidades.isEmpty()) {
             val pedido = pedidosViewModel.obtenerPedidoPorId(pedidoId)
             val items = pedidosViewModel.obtenerItemsDePedido(pedidoId)
             if (pedido != null) {
                 nombreCliente = pedido.nombreCliente
+                cantidades.clear() // Limpiamos por si acaso
                 items.forEach { item ->
                     cantidades[item.productoId] = item.cantidad
                 }
             }
+        }
+
+        // Si es un pedido nuevo, o si ya cargaron los productos en edición, apagamos el cargando
+        if (productos.isNotEmpty() || pedidoId == null) {
             cargando = false
         }
     }
 
-    // ESTADO PARA EL RECONOCIMIENTO DE VOZ
+    // ===== ESTADO PARA EL RECONOCIMIENTO DE VOZ =====
     val context = LocalContext.current
     val reconocimientoVoz = remember { ReconocimientoVoz(context) }
     val estadoVoz by reconocimientoVoz.estado.collectAsState()
     val textoVoz by reconocimientoVoz.textoReconocido.collectAsState()
     val errorVoz by reconocimientoVoz.error.collectAsState()
 
-// Liberar recursos al cerrar
+    // 2. LIBERAR RECURSOS (Evita el crash)
     DisposableEffect(Unit) {
-        onDispose { reconocimientoVoz.liberar() }
+        onDispose {
+            reconocimientoVoz.cancelar() //
+            reconocimientoVoz.liberar()
+        }
     }
 
-// Permiso de micrófono
+    // Permiso de micrófono
     val launcherPermiso = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { concedido ->
@@ -90,20 +99,11 @@ fun NuevoPedidoScreen(
         }
     }
 
-// Callback al tocar el micrófono
     val onMicrofonoClick = {
         when (estadoVoz) {
-            ReconocimientoVoz.Estado.ESCUCHANDO -> {
-                // Si ya está escuchando, cancelamos para volver a empezar
-                reconocimientoVoz.cancelar()
-            }
-            ReconocimientoVoz.Estado.PROCESANDO -> {
-                // Si está procesando, no hacemos nada (esperamos el resultado)
-            }
-            else -> {
-                // Estado LISTO o ERROR: iniciamos un nuevo reconocimiento
-                launcherPermiso.launch(Manifest.permission.RECORD_AUDIO)
-            }
+            ReconocimientoVoz.Estado.ESCUCHANDO -> reconocimientoVoz.cancelar()
+            ReconocimientoVoz.Estado.PROCESANDO -> Unit
+            else -> launcherPermiso.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -113,13 +113,8 @@ fun NuevoPedidoScreen(
             val resultado = ProcesadorDeVoz.procesar(texto, productos)
 
             if (resultado.itemsDetectados.isEmpty()) {
-                android.widget.Toast.makeText(
-                    context,
-                    "No reconocí ningún producto. Intenta de nuevo.",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                android.widget.Toast.makeText(context, "No reconocí ningún producto.", android.widget.Toast.LENGTH_LONG).show()
             } else {
-                // Acumular todo en un solo mapa y actualizar el estado una vez
                 val nuevosCambios = mutableMapOf<Int, Int>()
                 val nombres = mutableListOf<String>()
 
@@ -134,43 +129,23 @@ fun NuevoPedidoScreen(
                     }
                 }
 
-                // Aplicar todos los cambios al final
                 nuevosCambios.forEach { (productoId, cantidadAdicional) ->
                     val actual = cantidades[productoId] ?: 0
                     cantidades[productoId] = actual + cantidadAdicional
                 }
 
-                android.widget.Toast.makeText(
-                    context,
-                    "Agregado: ${nombres.joinToString(", ")}",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                android.widget.Toast.makeText(context, "Agregado: ${nombres.joinToString(", ")}", android.widget.Toast.LENGTH_LONG).show()
             }
-
             reconocimientoVoz.reiniciar()
         }
     }
 
-// MANEJO DE ERRORES
     LaunchedEffect(errorVoz) {
         errorVoz?.let { err ->
-            android.widget.Toast.makeText(
-                context,
-                err,
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
             reconocimientoVoz.reiniciar()
         }
     }
-
-// ===== DIAGNÓSTICO DE ESTADO (para depurar) =====
-//    LaunchedEffect(estadoVoz) {
-//        android.widget.Toast.makeText(
-//            context,
-//            "Estado: $estadoVoz",
-//            android.widget.Toast.LENGTH_SHORT
-//        ).show()
-//    }
 
     Scaffold(
         topBar = {
@@ -178,19 +153,13 @@ fun NuevoPedidoScreen(
                 title = { Text(if (pedidoId != null) "Editar pedido" else "Nuevo pedido") },
                 navigationIcon = {
                     IconButton(onClick = onVolver) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
                     }
                 }
             )
         },
         bottomBar = {
-            Surface(
-                shadowElevation = 8.dp,
-                color = MaterialTheme.colorScheme.surface
-            ) {
+            Surface(shadowElevation = 8.dp, color = MaterialTheme.colorScheme.surface) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -202,10 +171,7 @@ fun NuevoPedidoScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Total:",
-                            style = MaterialTheme.typography.titleLarge
-                        )
+                        Text(text = "Total:", style = MaterialTheme.typography.titleLarge)
                         Text(
                             text = "$$total",
                             style = MaterialTheme.typography.titleLarge,
@@ -214,35 +180,35 @@ fun NuevoPedidoScreen(
                         )
                     }
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    // 3. BOTÓN DE GUARDAR CORREGIDO
                     Button(
                         onClick = {
-                            if (nombreCliente.isNotBlank() && total > 0) {
+                            if (nombreCliente.isNotBlank() && cantidades.values.any { it > 0 }) {
                                 if (pedidoId != null) {
                                     // EDITANDO: actualizar el pedido existente
                                     pedidosViewModel.actualizarPedido(
                                         pedidoId = pedidoId,
                                         nombreCliente = nombreCliente.trim(),
-                                        cantidades = cantidades,
+                                        cantidades = cantidades.toMap(),
                                         productos = productos
                                     )
                                 } else {
-                                    // NUEVO: crear UN SOLO pedido con todos los items
+                                    // Crear UN SOLO pedido con todos los items
                                     val items = cantidades
                                         .filter { it.value > 0 }
-                                        .mapNotNull { (productoId, cantidad) ->
-                                            val producto = productos.find { it.id == productoId }
+                                        .mapNotNull { (prodId, cantidad) ->
+                                            val producto = productos.find { it.id == prodId }
                                             if (producto != null) {
                                                 PedidoItem(
-                                                    pedidoId = 0, // se asigna al insertar
+                                                    pedidoId = 0,
                                                     productoId = producto.id,
                                                     nombreProducto = producto.nombre,
                                                     precioUnitario = producto.precio,
-                                                    cantidad = cantidad,
-                                                    subtotal = producto.precio * cantidad
+                                                    cantidad = cantidad, // La cantidad real
+                                                    subtotal = producto.precio * cantidad // El subtotal real
                                                 )
-                                            } else {
-                                                null
-                                            }
+                                            } else null
                                         }
 
                                     pedidosViewModel.crearOActualizarPedidoConItems(
@@ -253,7 +219,8 @@ fun NuevoPedidoScreen(
                                 onPedidoGuardado()
                             }
                         },
-                        enabled = nombreCliente.isNotBlank() && total > 0,
+                        // Se habilita si hay nombre Y al menos 1 producto
+                        enabled = nombreCliente.isNotBlank() && cantidades.values.any { it > 0 },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(if (pedidoId != null) "Guardar cambios" else "Guardar pedido")
@@ -261,7 +228,6 @@ fun NuevoPedidoScreen(
                 }
             }
         },
-        // BOTÓN FLOTANTE DE MICRÓFONO
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onMicrofonoClick,
@@ -275,67 +241,53 @@ fun NuevoPedidoScreen(
                     .size(96.dp)
                     .windowInsetsPadding(WindowInsets.navigationBars)
             ) {
-                Icon(
-                    Icons.Default.Mic,
-                    contentDescription = "Agregar por voz",
-                    modifier = Modifier.size(48.dp),
-                    tint = Color.White
-                )
+                Icon(Icons.Default.Mic, contentDescription = "Agregar por voz", modifier = Modifier.size(48.dp), tint = Color.White)
             }
         },
         floatingActionButtonPosition = FabPosition.Center
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            // Campo de nombre
-            OutlinedTextField(
-                value = nombreCliente,
-                onValueChange = { nombreCliente = it },
-                label = { Text("Nombre del cliente") },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            )
+        // 4. MOSTRAR PANTALLA DE CARGA
+        if (cargando) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                OutlinedTextField(
+                    value = nombreCliente,
+                    onValueChange = { nombreCliente = it },
+                    label = { Text("Nombre del cliente") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp)
+                )
 
-            Divider()
+                Divider()
 
-            // Lista de productos
-            if (productos.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "No hay productos. Agrega uno primero.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(productos, key = { it.id }) { producto ->
-                        ProductoSelectorCard(
-                            producto = producto,
-                            cantidad = cantidades[producto.id] ?: 0,
-                            onAgregar = {
-                                cantidades[producto.id] = (cantidades[producto.id] ?: 0) + 1
-                            },
-                            onQuitar = {
-                                val actual = cantidades[producto.id] ?: 0
-                                if (actual > 1) {
-                                    cantidades[producto.id] = actual - 1
-                                } else {
-                                    cantidades.remove(producto.id)
+                if (productos.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No hay productos. Agrega uno primero.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(productos, key = { it.id }) { producto ->
+                            ProductoSelectorCard(
+                                producto = producto,
+                                cantidad = cantidades[producto.id] ?: 0,
+                                onAgregar = { cantidades[producto.id] = (cantidades[producto.id] ?: 0) + 1 },
+                                onQuitar = {
+                                    val actual = cantidades[producto.id] ?: 0
+                                    if (actual > 1) {
+                                        cantidades[producto.id] = actual - 1
+                                    } else {
+                                        cantidades.remove(producto.id)
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -352,28 +304,16 @@ fun ProductoSelectorCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MostazaOpaco
-        )
+        colors = CardDefaults.cardColors(containerColor = MostazaOpaco)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = producto.nombre,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextoSobreMostaza
-                )
-                Text(
-                    text = "$${producto.precio}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = DoradoOscuro
-                )
+                Text(text = producto.nombre, style = MaterialTheme.typography.titleMedium, color = TextoSobreMostaza)
+                Text(text = "$${producto.precio}", style = MaterialTheme.typography.bodyMedium, color = DoradoOscuro)
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
